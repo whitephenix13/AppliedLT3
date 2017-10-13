@@ -7,13 +7,19 @@ import numpy as np
 import time
 
 #HYPERPARAMETERS
+    #Phrase translation parameters
+GLOBAL_lamb_fe = 1
+GLOBAL_lamb_ef = 1
+GLOBAL_lamb_lex_fe = 1
+GLOBAL_lamb_lex_ef = 1
+
     #language model parameters
 GLOBAL_language_model_window = 3
 GLOBAL_backoff_param = 1 #normally 0.4
 
     #reordering weights
-lamb_lr = [1] * 3 #left to right weights as [monotone, swap, discontinuous ]
-lamb_rl = [1] * 3 #right to left weights as [monotone, swap, discontinuous ]
+GLOBAL_lamb_lr = [1] * 3 #left to right weights as [monotone, swap, discontinuous ]
+GLOBAL_lamb_rl = [1] * 3 #right to left weights as [monotone, swap, discontinuous ]
 
     #all weights
 GLOBAL_phrase_transl_weight = 1
@@ -47,7 +53,9 @@ GLOBAL_reordering = open(DATA_DIR+'dm.fe.0.75', 'r')
 #       -Word penalty: normally length of target sentence
 #       -Reordering: use hierarchical ordering to determine event? Or just use the probability as a cost, use weights here too
 def phrase_translation_cost():
-    # TODO:Phrase translation: htm(state) = p(e|f) + p(f|e) however we also have to use lexical weight... how?
+    # TODO:Phrase translation: htm(state) = GLOBAL_lamb_ef * log(p(e|f)) + GLOBAL_lamb_fe * log(p(f|e)) +\
+    # TODO:  GLOBAL_lamb_lex_ef * log(lex(e|f)) + GLOBAL_lamb_lex_fe * log(lex(f|e))
+    #TODO: however we also have to use lexical weight... how?
     # TODO: how to handle missing phrases?
     return 0
 
