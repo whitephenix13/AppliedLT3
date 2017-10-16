@@ -29,6 +29,7 @@ GLOBAL_phrase_weight = 1
 GLOBAL_word_weight = 1
 GLOBAL_reordering_weight = 1
 
+GLOBAL_e = sys.float_info.epsilon
 
 #Small fix for python 3 code
 python3Code = False;
@@ -36,14 +37,14 @@ if (sys.version_info > (3, 0)):
     python3Code = True
 
 #Load/Save directory
-DATA_DIR = 'data/'
+DATA_DIR = './data/'
 
-GLOBAL_f_en = open(DATA_DIR +'test.en', 'r')
-GLOBAL_f_de = open(DATA_DIR+'test.de', 'r')
+GLOBAL_f_en = open(DATA_DIR +'file.test.en', 'r')
+GLOBAL_f_de = open(DATA_DIR+'file.test.de', 'r')
 GLOBAL_phrase_table = open(DATA_DIR+'phrase-table', 'r')
 GLOBAL_test_results = open(DATA_DIR+'testresults.trans.txt.trace', 'r')
 GLOBAL_language_model = open(DATA_DIR+'file.en.lm', 'r')
-GLOBAL_reordering = open(DATA_DIR+'dm.fe.0.75', 'r')
+GLOBAL_reordering = open(DATA_DIR+'dm_fe_0.75', 'r')
 
 
 #TODO: Transition cost function:
@@ -72,12 +73,74 @@ def phrase_translation_cost(phrase_pair, translation_dict):
 #language_model_dict: dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
 #Returns the language model continuation cost as ln(prob)
 def LM_cost(target_phrase,language_model_dict):
-     #Logarithm base switch formula: ln(x) = log_10(x) / log_10(e)
-     #TODO:loop over all the english word and sum p(wn|wn-1,wn-2...wn-(GLOBAL_language_model_window)+1)= X (short name for explanation)
-     #TODO: to get X : X= p(wn,wn-1,...wn-(GLOBAL_language_model_window)+1) / p(wn-1,...wn-(GLOBAL_language_model_window)+1)
-     #TODO: if either of those probs are not found in language_model, use the backof prob * GLOBAL_backoff_param
-     #TODO: return np.log of this
-    return 0
+    #Logarithm base switch formula: ln(x) = log_10(x) / log_10(e)
+    #TODO:loop over all the english word and sum p(wn|wn-1,wn-2...wn-(GLOBAL_language_model_window)+1)= X (short name for explanation)
+    #TODO: to get X : X= p(wn,wn-1,...wn-(GLOBAL_language_model_window)+1) / p(wn-1,...wn-(GLOBAL_language_model_window)+1)
+    #TODO: if either of those probs are not found in language_model, use the backof prob * GLOBAL_backoff_param
+    #TODO: return np.log of this
+
+    # assumption : the probability given is already in log space and it's already an ngram
+    target_words = target_phrase.split()
+    total_prob = 0.0
+    for i, word in enumerate(target_words):
+        ngram = ""
+        ### create the ngrams according to the window ###
+        if(i+1 > GLOBAL_language_model_window):
+            for j in range(i+1-GLOBAL_language_model_window,i+1):
+                ngram += target_words[j] + " "
+            ngram = ngram[:-1]
+        else:
+            for j in range(i+1):
+                ngram += target_words[j] + " "
+            ngram = ngram[:-1]
+        ### checking ngram and calculate probability ###
+        if ngram in language_model_dict:
+            total_prob += language_model_dict[word][0]
+        else:
+            total_prob += calculate_back_off(ngram, language_model_dict)
+    #return total_prob / np.log(GLOBAL_e)
+    return total_prob
+
+# TODO : For Alex please read this
+# Basically my calculate_back_off method + LM_Cost method computes prob in a recursive way and handle 3 of these cases below.
+# Case 1 (assume in log space)
+# Say we have phrase "the way of life", but p(life|the way of) doesn't exists, then in my implementation I will back off to : p(life|way of) + back off prob p(way|the).
+# Is this method correct?
+# Case 2
+# Say that in the Case 1 example, the back off prob p(way|the) doesn't exists (None), then my implementation will penalize this by : p(life|way of) + SOME_BIG_NUMBERS. I dont know if this is the right way to go
+# Case 3
+# Say that in the Case 1 example, p(life|way of) doesn't exists but back off prob p(way|the) does exist, then my implementation will recurse to p(life|of) + back off prob p(of|way) ignoring completely back off prob p(way|the).
+# In this case should we consider also back off prob p(way|the)?
+#
+# If my understanding is completely wrong, please do tell me.
+
+def calculate_back_off(ngram, language_model_dict):
+    # base case
+    if len(ngram.split()) == 1:
+        if ngram in language_model_dict:
+            return language_model_dict[ngram]
+        else:
+            # a very large number? im not sure about this
+            return -20
+    # if not base case
+    else:
+        result = 0
+        words = ngram.split()
+        new_ngram = " ".join(words[1:])
+        backoff_ngram = " ".join(words[:2])
+        if(new_ngram in language_model_dict):
+            result += language_model_dict[new_ngram][0]
+            # penalize with big numbers
+            if(backoff_ngram not in language_model_dict):
+                result += -20
+             # penalize with big numbers also
+            elif(language_model_dict[backoff_ngram][1] == None):
+                result += -20
+            else:
+                result += language_model_dict[backoff_ngram][1]
+        else:
+            result += calculate_back_off(new_ngram,language_model_dict)
+    return result
 
 def phrase_penalty_cost():
     #phrase penalty is 2.718 = exp(1) hence the log of it
@@ -169,7 +232,17 @@ def main():
     #TODO: create translation_dict by reading from GLOBAL_phrase_table
 
     #TODO: create language_model_dict by reading from GLOBAL_language_model
-
+    language_model_dict = defaultdict(tuple)
+    for line in GLOBAL_language_model:
+        elems = line.replace("\n","").split("\t")
+        if len(elems) == 3:
+            language_model_dict[elems[1]] = (float(elems[0]), float(elems[2]))
+        # case for empty backoff prob
+        elif len(elems) == 2:
+            language_model_dict[elems[1]] = (float(elems[0]), None)
+    #print(LM_cost("the way of life", language_model_dict))
+    print(LM_cost("life of shit man", language_model_dict))
+    print(LM_cost("the the the the the the", language_model_dict))
     #TODO: create reordering_dict by reading from GLOBAL_reordering
 
     #TODO: store all source sentence in a list (1 index for 1 sentence) by reading from GLOBAL_f_de
@@ -183,3 +256,5 @@ def main():
 
         #TODO: write GERMAN ||| ENGLISH ||| cost in a file
     print('')
+
+main()
