@@ -12,6 +12,7 @@ GLOBAL_lamb_fe = 1
 GLOBAL_lamb_ef = 1
 GLOBAL_lamb_lex_fe = 1
 GLOBAL_lamb_lex_ef = 1
+GLOBAL_language_constant = 1
 
     #language model parameters
 GLOBAL_language_model_window = 3
@@ -52,17 +53,25 @@ GLOBAL_reordering = open(DATA_DIR+'dm.fe.0.75', 'r')
 #       -Phrase penalty: apply -1 at each transition call
 #       -Word penalty: normally length of target sentence
 #       -Reordering: use hierarchical ordering to determine event? Or just use the probability as a cost, use weights here too
-def phrase_translation_cost():
-    # TODO:Phrase translation: htm(state) = GLOBAL_lamb_ef * log(p(e|f)) + GLOBAL_lamb_fe * log(p(f|e)) +\
-    # TODO:  GLOBAL_lamb_lex_ef * log(lex(e|f)) + GLOBAL_lamb_lex_fe * log(lex(f|e))
-    #TODO: however we also have to use lexical weight... how?
-    # TODO: how to handle missing phrases?
-    return 0
+
+#phrase_pair: Tuple of string (German,English) to be translated
+#translation_dict: dictionnary [(German phrase,english phrase)] = (p(f|e) lex(f|e) p(e|f) lex(e|f))
+#Returns the translation cost as ln(prob)
+def phrase_translation_cost(phrase_pair, translation_dict):
+    cost = 0
+    if phrase_pair in translation_dict:
+        val = translation_dict[phrase_pair]
+        #add GLOBAL_lamb_ef * log(p(e|f)) + GLOBAL_lamb_fe * log(p(f|e)) +GLOBAL_lamb_lex_ef * log(lex(e|f)) + GLOBAL_lamb_lex_fe * log(lex(f|e))
+        cost += GLOBAL_lamb_fe * val[0] + GLOBAL_lamb_lex_fe * val[1] + \
+                GLOBAL_lamb_ef * val[2] + GLOBAL_lamb_lex_ef * val[3]
+    else:#This happens if key not found or german word align to itself (UNK handling)
+        cost+= np.log(GLOBAL_language_constant)
+    return cost
 
 #target_phrase: string composed of words separated by spaces
-#language_model: dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
+#language_model_dict: dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
 #Returns the language model continuation cost as ln(prob)
-def LM_cost(target_phrase,prev_target_phrase,language_model):
+def LM_cost(target_phrase,language_model_dict):
      #Logarithm base switch formula: ln(x) = log_10(x) / log_10(e)
      #TODO:loop over all the english word and sum p(wn|wn-1,wn-2...wn-(GLOBAL_language_model_window)+1)= X (short name for explanation)
      #TODO: to get X : X= p(wn,wn-1,...wn-(GLOBAL_language_model_window)+1) / p(wn-1,...wn-(GLOBAL_language_model_window)+1)
@@ -80,15 +89,97 @@ def word_penalty_cost(target_phrase):
     #Do not use log as the log penalty is the length of the sentence
     return len(target_phrase.split())
 
-def reordering_cost():
-    #TODO: look for the phrase pair in the reordering dictionnary. use the .trace to determine which event it is
-    #TODO: if we call "o1" the r->l event and "o2" the l->r event, the final prob is then
-    #TODO: # use P = p r->l (o1) ^ {lamb_rl(o1)} *  p l->r (o2) ^ {lamb_lr(o2)}
-    #TODO: the cost is then the np.log of this probability
-    # TODO: how to handle missing phrases?
-    return 0
-def transition_cost():
-    return GLOBAL_phrase_transl_weight * phrase_translation_cost () + GLOBAL_language_model_weight * LM_cost() + \
-           GLOBAL_phrase_weight * phrase_penalty_cost() + GLOBAL_word_weight * word_penalty_cost() + \
-           GLOBAL_reordering_weight * reordering_cost()
+#phrase_pair: Tuple of string (German,English) to be translated
+#event_type : Tuple of integer -1:None, 0=monotonic, 1=swap, 2=discontinuous, first one is for right to left, 2nd left to right
+#reordering_dict: dictionnary[(German,English)] = [pr->l(mono|f,e),...,pl->r(disc|f,e)]
+def reordering_cost(phrase_pair,event_type,reordering_dict):
+    prob_rl=1
+    prob_lr=1
+    o1 = event_type[0]
+    o2 = event_type[1]
+    if phrase_pair in reordering_dict:
+        val = reordering_dict[phrase_pair]
+    else:
+        val = reordering_dict[("UNK","UNK")]
+    if o1 != -1:
+        prob_rl = np.power(val[o1],GLOBAL_lamb_lr[o1])
+    if o2 != -1:
+        prob_lr = np.power(val[3+o2],GLOBAL_lamb_lr[o2])
+    return np.log(prob_rl* prob_lr)
 
+#prevAlign: previous source_target_align or None
+#currentAlign: current source_target_align or None
+#nextAlign: next source_target_align or None
+def computeReorderingEvent(prevAlign,currentAlign,nextAlign):
+    res = (-1,-1) #-1 means no reordering event, the res is in the format (r->l reordering event, l->r reordering event)
+    if prevAlign != None :
+        step = currentAlign[0] - prevAlign[1]
+        if step == 1:
+            res[0]=0 #monotonic
+        elif step==-1:
+            res[0] = 1 #swap
+        else:
+            res[0]=2 #discontinuous
+    if nextAlign != None :
+        step = nextAlign[0] - currentAlign[1]
+        if step == 1:
+            res[0] = 0  # monotonic
+        elif step == -1:
+            res[0] = 1  # swap
+        else:
+            res[0] = 2  # discontinuous
+    return res
+#source_sentence: List of source words
+#target_phrases: List of target phrases (from testresults.trans.txt.trace)
+#source_target_align: List of tuple of int matching with target_phrases to retrieve the corresponding source_phrase
+#translation_dict: dictionnary [(German phrase,english phrase)] = (p(f|e) lex(f|e) p(e|f) lex(e|f))
+#language_model_dict: dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
+#reordering_dict: dictionnary[(German,English)] = [pr->l(mono|f,e),...,pl->r(disc|f,e)]
+#return the cost for the source_sentence
+def sentence_cost(source_sentence,target_phrases,source_target_align,translation_dict,language_model_dict,reordering_dict):
+    total_cost = 0
+    #Compute phrase pair
+    for i in range(len(source_target_align)):
+        source_phrase = ""
+        for j in range(source_target_align[i][0],source_target_align[i][0]+1):
+            if j != source_target_align[i][0]:
+                source_phrase+=" "
+            source_phrase+= source_sentence[j]
+        phrase_pair =(source_phrase,target_phrases[i])
+
+        #Compute reordering event
+        prevAlign = None
+        nextAlign = None
+        if i>0:
+            prevAlign=source_target_align[i-1]
+        if i< (len(source_target_align)-1):
+            nextAlign = source_target_align[i+1]
+        event_type = computeReorderingEvent(prevAlign,source_target_align[i],nextAlign)
+
+        total_cost = GLOBAL_phrase_transl_weight * phrase_translation_cost (phrase_pair,translation_dict) +\
+           GLOBAL_language_model_weight * LM_cost(phrase_pair[1],language_model_dict) + \
+           GLOBAL_phrase_weight * phrase_penalty_cost() +\
+           GLOBAL_word_weight * word_penalty_cost(phrase_pair[1]) + \
+           GLOBAL_reordering_weight * reordering_cost(phrase_pair,event_type,reordering_dict)
+
+    return total_cost
+
+
+def main():
+    #TODO: create translation_dict by reading from GLOBAL_phrase_table
+
+    #TODO: create language_model_dict by reading from GLOBAL_language_model
+
+    #TODO: create reordering_dict by reading from GLOBAL_reordering
+
+    #TODO: store all source sentence in a list (1 index for 1 sentence) by reading from GLOBAL_f_de
+
+    #TODO: for each line in GLOBAL_test_results
+
+        #TODO: extract target phrase and source->target alignement
+
+        #TODO: compute the sentence cost with:
+        #TODO: sentence_cost(source_sentence,target_phrases,source_target_align,translation_dict,language_model_dict,reordering_dict):
+
+        #TODO: write GERMAN ||| ENGLISH ||| cost in a file
+    print('')
