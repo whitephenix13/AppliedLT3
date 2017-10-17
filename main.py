@@ -12,11 +12,12 @@ GLOBAL_lamb_fe = 1
 GLOBAL_lamb_ef = 1
 GLOBAL_lamb_lex_fe = 1
 GLOBAL_lamb_lex_ef = 1
-GLOBAL_language_constant = 1
+GLOBAL_translation_constant = 1
 
     #language model parameters
 GLOBAL_language_model_window = 3
-GLOBAL_backoff_param = 1 #normally 0.4
+GLOBAL_backoff_weight = 0 #P(wN| w{N-1},w1) = P(wN|w{N-1},w2)*backoff-weight(w{N-1}|w{N-2},w1 ), if not found backoff-weight=1 (0 in log space)
+GLOBAL_language_constant = -np.log10(np.exp(1)) #so that the division gives -1
 
     #reordering weights
 GLOBAL_lamb_lr = [1] * 3 #left to right weights as [monotone, swap, discontinuous ]
@@ -28,8 +29,6 @@ GLOBAL_language_model_weight = 1
 GLOBAL_phrase_weight = 1
 GLOBAL_word_weight = 1
 GLOBAL_reordering_weight = 1
-
-GLOBAL_e = sys.float_info.epsilon
 
 #Small fix for python 3 code
 python3Code = False;
@@ -66,79 +65,62 @@ def phrase_translation_cost(phrase_pair, translation_dict):
         cost += GLOBAL_lamb_fe * val[0] + GLOBAL_lamb_lex_fe * val[1] + \
                 GLOBAL_lamb_ef * val[2] + GLOBAL_lamb_lex_ef * val[3]
     else:#This happens if key not found or german word align to itself (UNK handling)
-        cost+= np.log(GLOBAL_language_constant)
+        print('Translation:',phrase_pair)
+        cost+= np.log(GLOBAL_translation_constant)
     return cost
 
 #target_phrase: string composed of words separated by spaces
 #language_model_dict: dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
 #Returns the language model continuation cost as ln(prob)
 def LM_cost(target_phrase,language_model_dict):
-    #Logarithm base switch formula: ln(x) = log_10(x) / log_10(e)
-    #TODO:loop over all the english word and sum p(wn|wn-1,wn-2...wn-(GLOBAL_language_model_window)+1)= X (short name for explanation)
-    #TODO: to get X : X= p(wn,wn-1,...wn-(GLOBAL_language_model_window)+1) / p(wn-1,...wn-(GLOBAL_language_model_window)+1)
-    #TODO: if either of those probs are not found in language_model, use the backof prob * GLOBAL_backoff_param
-    #TODO: return np.log of this
-
     # assumption : the probability given is already in log space and it's already an ngram
     target_words = target_phrase.split()
     total_prob = 0.0
     for i, word in enumerate(target_words):
         ngram = ""
         ### create the ngrams according to the window ###
-        if(i+1 > GLOBAL_language_model_window):
-            for j in range(i+1-GLOBAL_language_model_window,i+1):
-                ngram += target_words[j] + " "
-            ngram = ngram[:-1]
-        else:
-            for j in range(i+1):
-                ngram += target_words[j] + " "
-            ngram = ngram[:-1]
-        ### checking ngram and calculate probability ###
+        #Note: the n-gram consists of this word with a history of the n-1 previous words
+        enough_words = (i - (GLOBAL_language_model_window -1)) >= 0 #<=> can we have n-1 words in the history
+        min_index_history = (i - (GLOBAL_language_model_window -1)) if enough_words else 0
+        max_index = i
+        for j in range(min_index_history,max_index+1):
+            ngram += target_words[j] + " "
+        ngram = ngram[:-1]
+        ###calculate probability ###
         if ngram in language_model_dict:
-            total_prob += language_model_dict[word][0]
+            total_prob += language_model_dict[ngram][0]
         else:
             total_prob += calculate_back_off(ngram, language_model_dict)
-    #return total_prob / np.log(GLOBAL_e)
-    return total_prob
+    return total_prob/ np.log10(np.exp(1)) #convert log10 to log prob
 
-# TODO : For Alex please read this
-# Basically my calculate_back_off method + LM_Cost method computes prob in a recursive way and handle 3 of these cases below.
-# Case 1 (assume in log space)
-# Say we have phrase "the way of life", but p(life|the way of) doesn't exists, then in my implementation I will back off to : p(life|way of) + back off prob p(way|the).
-# Is this method correct?
-# Case 2
-# Say that in the Case 1 example, the back off prob p(way|the) doesn't exists (None), then my implementation will penalize this by : p(life|way of) + SOME_BIG_NUMBERS. I dont know if this is the right way to go
-# Case 3
-# Say that in the Case 1 example, p(life|way of) doesn't exists but back off prob p(way|the) does exist, then my implementation will recurse to p(life|of) + back off prob p(of|way) ignoring completely back off prob p(way|the).
-# In this case should we consider also back off prob p(way|the)?
-#
-# If my understanding is completely wrong, please do tell me.
-
+#ngram : string of words seperated by spaces
+#language_model_dict: dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
+#This function is recursive and it terminates since the number of words in the ngrams strictly decrease at each call
+#This function is based on the following link: https://cmusphinx.github.io/wiki/arpaformat/
 def calculate_back_off(ngram, language_model_dict):
-    # base case
+    # end case
     if len(ngram.split()) == 1:
         if ngram in language_model_dict:
-            return language_model_dict[ngram]
+            return language_model_dict[ngram][0]
         else:
-            # a very large number? im not sure about this
-            return -20
-    # if not base case
+            return GLOBAL_language_constant
+    # general case
     else:
         result = 0
         words = ngram.split()
         new_ngram = " ".join(words[1:])
         backoff_ngram = " ".join(words[:2])
-        if(new_ngram in language_model_dict):
+        if new_ngram in language_model_dict:
             result += language_model_dict[new_ngram][0]
-            # penalize with big numbers
+            #Also use the backoff prob
             if(backoff_ngram not in language_model_dict):
-                result += -20
-             # penalize with big numbers also
+                result += GLOBAL_backoff_weight
             elif(language_model_dict[backoff_ngram][1] == None):
-                result += -20
+                result += GLOBAL_backoff_weight
             else:
                 result += language_model_dict[backoff_ngram][1]
         else:
+            #Recursive call with the shorter ngram
             result += calculate_back_off(new_ngram,language_model_dict)
     return result
 
@@ -178,19 +160,19 @@ def computeReorderingEvent(prevAlign,currentAlign,nextAlign):
     if prevAlign != None :
         step = currentAlign[0] - prevAlign[1]
         if step == 1:
-            res[0]=0 #monotonic
+            res=(0,-1) #monotonic
         elif step==-1:
-            res[0] = 1 #swap
+            res = (1,-1) #swap
         else:
-            res[0]=2 #discontinuous
+            res= (1,-1) #discontinuous
     if nextAlign != None :
         step = nextAlign[0] - currentAlign[1]
         if step == 1:
-            res[0] = 0  # monotonic
+            res = (res[0],0)  # monotonic
         elif step == -1:
-            res[0] = 1  # swap
+            res = (res[0],1)   # swap
         else:
-            res[0] = 2  # discontinuous
+            res = (res[0],2)   # discontinuous
     return res
 #source_sentence: List of source words
 #target_phrases: List of target phrases (from testresults.trans.txt.trace)
@@ -227,34 +209,108 @@ def sentence_cost(source_sentence,target_phrases,source_target_align,translation
 
     return total_cost
 
+########################### DICTIONNARY CREATION FUNCTIONS   #############################################################
 
-def main():
-    #TODO: create translation_dict by reading from GLOBAL_phrase_table
+#Returns dictionnary [(German phrase,english phrase)] = (p(f|e) lex(f|e) p(e|f) lex(e|f))
+def createTranslationDict():
+    translation_dict = defaultdict(tuple)
+    for line in GLOBAL_phrase_table:
+        elems_bloc = line.replace("\n", "").replace("\t", "").split("|||") #[source, target,probs,alignments,counts]
+        translation_dict[(elems_bloc[0],elems_bloc[1])] = elems_bloc[2].split(" ")[1:-2]
+    return translation_dict
 
-    #TODO: create language_model_dict by reading from GLOBAL_language_model
+#Returns dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
+def createLMDict():
     language_model_dict = defaultdict(tuple)
     for line in GLOBAL_language_model:
-        elems = line.replace("\n","").split("\t")
-        if len(elems) == 3:
-            language_model_dict[elems[1]] = (float(elems[0]), float(elems[2]))
-        # case for empty backoff prob
-        elif len(elems) == 2:
-            language_model_dict[elems[1]] = (float(elems[0]), None)
-    #print(LM_cost("the way of life", language_model_dict))
-    print(LM_cost("life of shit man", language_model_dict))
-    print(LM_cost("the the the the the the", language_model_dict))
-    #TODO: create reordering_dict by reading from GLOBAL_reordering
+        elems = line.replace("\n", "").replace("\t", " ").split(" ")
+        valid = False
+        try:
+            float(elems[0])
+            valid = True
+        except ValueError:
+            valid = False
 
-    #TODO: store all source sentence in a list (1 index for 1 sentence) by reading from GLOBAL_f_de
+        if valid:
+            size = len(elems)
+            last_elem_is_num = False
+            try:
+                float(elems[size - 1])
+                if float(elems[size - 1]) < 0:  # handle the 6.66 and 6:66 cases
+                    last_elem_is_num = True
+            except ValueError:
+                last_elem_is_num = False
+            target_phrase = " ".join(elems[1:-1]) if last_elem_is_num else " ".join(elems[1:])
 
-    #TODO: for each line in GLOBAL_test_results
+            if last_elem_is_num:
+                language_model_dict[target_phrase] = (float(elems[0]), float(elems[size - 1]))
+            # case for empty backoff prob
+            else:
+                language_model_dict[target_phrase] = (float(elems[0]), None)
+    return language_model_dict
 
-        #TODO: extract target phrase and source->target alignement
+#Returns dictionnary[(German,English)] = [pr->l(mono|f,e),...,pl->r(disc|f,e)]
+def createReorderingDict():
+    reordering_dict = defaultdict(tuple)
+    for line in GLOBAL_reordering:
+        elems = line.replace("\n", "").replace("\t", " ").split("|||")
+        if python3Code:
+            reordering_dict[(elems[0][0:-1],elems[1][1:-1])] = list(map(float, elems[2].split()))
+        else:
+            reordering_dict[(elems[0][0:-1], elems[1][1:-1])] = map(float, elems[2].split())
+    return reordering_dict
+###########################             MAIN                      #############################################################
+def main():
+    #File to write results
+    result_f = open('results.txt', 'w')
 
-        #TODO: compute the sentence cost with:
-        #TODO: sentence_cost(source_sentence,target_phrases,source_target_align,translation_dict,language_model_dict,reordering_dict):
+    #create translation_dict by reading from GLOBAL_phrase_table
+    translation_dict= createTranslationDict()
 
-        #TODO: write GERMAN ||| ENGLISH ||| cost in a file
-    print('')
+    #create language_model_dict by reading from GLOBAL_language_model
+    language_model_dict= createLMDict()
+
+    #create reordering_dict by reading from GLOBAL_reordering
+    reordering_dict=createReorderingDict()
+
+    #store all source sentence in a list (1 index for 1 sentence) by reading from GLOBAL_f_de
+    source_sentences = []
+    for line in GLOBAL_f_de:
+        source_sentences.append(line.replace("\n", "").replace("\t", " "))
+
+    index = 0
+    for line in GLOBAL_test_results:
+        if index>0 and index%10==0:
+            print('Step:'+str(index)+ '/500')
+        #extract target phrase and source->target alignement
+        target_phrases=[]
+        source_target_align=[]
+        data = line.replace("\n","").split(" ||| ")# list of type "ind1-ind2:target_phrase"
+        for d in data:
+            data2 = d.split(":")# ["ind1-ind2","target_phrase"]
+            if len(data2)>1 : #get rid of empty words
+                target_phrases.append(data2[1])
+                align = data2[0].split("-")
+                source_target_align.append((int(align[0]),int(align[1])))
+
+        source_sentence = source_sentences[index].split(" ")
+
+        #compute the sentence cost with:
+        sentence_c = sentence_cost(source_sentence,target_phrases,source_target_align,translation_dict,language_model_dict,reordering_dict)
+
+        #write GERMAN ||| ENGLISH ||| cost in a file
+        target_sentence = " ".join(target_phrases)
+        result_line = source_sentences[index]+" ||| "+target_sentence +" ||| "+str(sentence_c)+"\n"
+        result_f.write(result_line)
+        index = index + 1
+
+    #close all used files
+    result_f.close()
+    GLOBAL_f_en.close()
+    GLOBAL_f_de.close()
+    GLOBAL_phrase_table.close()
+    GLOBAL_test_results.close()
+    GLOBAL_language_model.close()
+    GLOBAL_reordering.close()
 
 main()
