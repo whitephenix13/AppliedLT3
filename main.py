@@ -15,7 +15,7 @@ GLOBAL_lamb_lex_ef = 1
 GLOBAL_translation_constant = 1
 
     #language model parameters
-GLOBAL_language_model_window = 3
+GLOBAL_language_model_window = 5
 GLOBAL_backoff_weight = 0 #P(wN| w{N-1},w1) = P(wN|w{N-1},w2)*backoff-weight(w{N-1}|w{N-2},w1 ), if not found backoff-weight=1 (0 in log space)
 GLOBAL_language_constant = -np.log10(np.exp(1)) #so that the division gives -1
 
@@ -65,7 +65,6 @@ def phrase_translation_cost(phrase_pair, translation_dict):
         cost += GLOBAL_lamb_fe * val[0] + GLOBAL_lamb_lex_fe * val[1] + \
                 GLOBAL_lamb_ef * val[2] + GLOBAL_lamb_lex_ef * val[3]
     else:#This happens if key not found or german word align to itself (UNK handling)
-        print('Translation:',phrase_pair)
         cost+= np.log(GLOBAL_translation_constant)
     return cost
 
@@ -186,7 +185,7 @@ def sentence_cost(source_sentence,target_phrases,source_target_align,translation
     #Compute phrase pair
     for i in range(len(source_target_align)):
         source_phrase = ""
-        for j in range(source_target_align[i][0],source_target_align[i][0]+1):
+        for j in range(source_target_align[i][0],source_target_align[i][1]+1):
             if j != source_target_align[i][0]:
                 source_phrase+=" "
             source_phrase+= source_sentence[j]
@@ -201,7 +200,7 @@ def sentence_cost(source_sentence,target_phrases,source_target_align,translation
             nextAlign = source_target_align[i+1]
         event_type = computeReorderingEvent(prevAlign,source_target_align[i],nextAlign)
 
-        total_cost = GLOBAL_phrase_transl_weight * phrase_translation_cost (phrase_pair,translation_dict) +\
+        total_cost += GLOBAL_phrase_transl_weight * phrase_translation_cost (phrase_pair,translation_dict) +\
            GLOBAL_language_model_weight * LM_cost(phrase_pair[1],language_model_dict) + \
            GLOBAL_phrase_weight * phrase_penalty_cost() +\
            GLOBAL_word_weight * word_penalty_cost(phrase_pair[1]) + \
@@ -215,8 +214,11 @@ def sentence_cost(source_sentence,target_phrases,source_target_align,translation
 def createTranslationDict():
     translation_dict = defaultdict(tuple)
     for line in GLOBAL_phrase_table:
-        elems_bloc = line.replace("\n", "").replace("\t", "").split("|||") #[source, target,probs,alignments,counts]
-        translation_dict[(elems_bloc[0],elems_bloc[1])] = elems_bloc[2].split(" ")[1:-2]
+        elems_bloc = line.replace("\n", "").replace("\t", "").split(" ||| ") #[source, target,probs,alignments,counts]
+        if python3Code:
+            translation_dict[(elems_bloc[0], elems_bloc[1])] = list(map(float, elems_bloc[2].split()))
+        else:
+            translation_dict[(elems_bloc[0], elems_bloc[1])] = map(float, elems_bloc[2].split())
     return translation_dict
 
 #Returns dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
@@ -236,7 +238,7 @@ def createLMDict():
             last_elem_is_num = False
             try:
                 float(elems[size - 1])
-                if float(elems[size - 1]) < 0:  # handle the 6.66 and 6:66 cases
+                if float(elems[size - 1]) < 0:  # handle the 6.66 and 6:66 cases (all log probs are <0)
                     last_elem_is_num = True
             except ValueError:
                 last_elem_is_num = False
@@ -253,26 +255,30 @@ def createLMDict():
 def createReorderingDict():
     reordering_dict = defaultdict(tuple)
     for line in GLOBAL_reordering:
-        elems = line.replace("\n", "").replace("\t", " ").split("|||")
+        elems = line.replace("\n", "").replace("\t", " ").split(" ||| ")
         if python3Code:
-            reordering_dict[(elems[0][0:-1],elems[1][1:-1])] = list(map(float, elems[2].split()))
+            reordering_dict[(elems[0],elems[1])] = list(map(float, elems[2].split()))
         else:
-            reordering_dict[(elems[0][0:-1], elems[1][1:-1])] = map(float, elems[2].split())
+            reordering_dict[(elems[0],elems[1])] = map(float, elems[2].split())
     return reordering_dict
 ###########################             MAIN                      #############################################################
 def main():
     #File to write results
     result_f = open('results.txt', 'w')
 
+    print('Creation of translation dict')
     #create translation_dict by reading from GLOBAL_phrase_table
     translation_dict= createTranslationDict()
 
+    print('Creation of language model dict')
     #create language_model_dict by reading from GLOBAL_language_model
     language_model_dict= createLMDict()
 
+    print('Creation of reordering dict')
     #create reordering_dict by reading from GLOBAL_reordering
     reordering_dict=createReorderingDict()
 
+    print('Storing all the source sentences')
     #store all source sentence in a list (1 index for 1 sentence) by reading from GLOBAL_f_de
     source_sentences = []
     for line in GLOBAL_f_de:
@@ -289,7 +295,12 @@ def main():
         for d in data:
             data2 = d.split(":")# ["ind1-ind2","target_phrase"]
             if len(data2)>1 : #get rid of empty words
-                target_phrases.append(data2[1])
+                #handle sentences where they have ":" in it
+                target_ph =data2[1]
+                for k in range(2,len(data2)):
+                    target_ph+=":"+data2[k]
+                target_phrases.append(target_ph)
+
                 align = data2[0].split("-")
                 source_target_align.append((int(align[0]),int(align[1])))
 
@@ -312,5 +323,5 @@ def main():
     GLOBAL_test_results.close()
     GLOBAL_language_model.close()
     GLOBAL_reordering.close()
-
+    print('done')
 main()
