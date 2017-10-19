@@ -46,7 +46,6 @@ GLOBAL_language_model = open(DATA_DIR+'file.en.lm', 'r')
 GLOBAL_reordering = open(DATA_DIR+'dm_fe_0.75', 'r')
 
 
-#TODO: Transition cost function:
 #For all of the following, consider log_10() of prob so that they can be added?
 #       -Phrase translation: htm(state) = p(e|f) + p(f|e), use lexical weight
 #       -LM continuation: sum for all english word of new state p(english word |previous words) with previous words depending on the sliding window size
@@ -90,7 +89,7 @@ def LM_cost(target_phrase,language_model_dict):
             total_prob += language_model_dict[ngram][0]
         else:
             total_prob += calculate_back_off(ngram, language_model_dict)
-    return total_prob/ np.log10(np.exp(1)) #convert log10 to log prob
+    return total_prob / np.log10(np.exp(1)) #convert log10 to log prob using log_a(x) = log_b(x) / log_b(a)
 
 #ngram : string of words seperated by spaces
 #language_model_dict: dictionnary [english phrase] = (log10(prob),log10(back of prob) or None)
@@ -106,9 +105,9 @@ def calculate_back_off(ngram, language_model_dict):
     # general case
     else:
         result = 0
-        words = ngram.split()
-        new_ngram = " ".join(words[1:])
-        backoff_ngram = " ".join(words[:2])
+        words = ngram.split() #w1 ... wn
+        new_ngram = " ".join(words[1:]) #w2 ... wn
+        backoff_ngram = " ".join(words[:-1]) #w1 ... w-1
         if new_ngram in language_model_dict:
             result += language_model_dict[new_ngram][0]
             #Also use the backoff prob
@@ -141,13 +140,14 @@ def reordering_cost(phrase_pair,event_type,reordering_dict):
     prob_lr=1
     o1 = event_type[0]
     o2 = event_type[1]
+    #get all the reordering probabilite related to the phrase pair : p(reordering event |phrase pair)
     if phrase_pair in reordering_dict:
         val = reordering_dict[phrase_pair]
-    else:
+    else: #phras pair not found, use (UNK,UNK) instead
         val = reordering_dict[("UNK","UNK")]
-    if o1 != -1:
-        prob_rl = np.power(val[o1],GLOBAL_lamb_lr[o1])
-    if o2 != -1:
+    if o1 != -1: #handle case wehre there are no right phrase
+        prob_rl = np.power(val[o1],GLOBAL_lamb_rl[o1])
+    if o2 != -1: #handle case wehre there are no left phrase
         prob_lr = np.power(val[3+o2],GLOBAL_lamb_lr[o2])
     return np.log(prob_rl* prob_lr)
 
